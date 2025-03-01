@@ -1,5 +1,7 @@
 import gymnasium as gym
 import random
+import torch
+from main import QNetwork
 
 env = gym.make("MountainCar-v0", render_mode="human")
 state, _ = env.reset()
@@ -8,12 +10,13 @@ print(state)
 ob = env.observation_space
 ac = env.action_space
 
-print(ob,ac, state)
-print(random.choice(ac))
+model = QNetwork(2, 3)
+model.load_state_dict(torch.load("model.pth", map_location="cpu"))
 
-for _ in range(10000):
-    action = random.randint(0, env.action_space.n - 1)
-    state, reward, term, _, _ = env.step(action)
+state, _ = env.reset()
+done = False
+while not done:
+    action = model(torch.FloatTensor(state)).argmax().item()
+    next_state, reward, done, _, _ = env.step(action)
 
-    if term:
-        break
+    state = next_state
