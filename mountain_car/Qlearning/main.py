@@ -44,7 +44,7 @@ def main():
     gamma = 0.99
     epsilon_start = 1.0
     epsilon_end = 0.01
-    epsilon_decay = 200
+    epsilon_decay = 500
     epsilon = epsilon_start
 
     replay_buffer = []
@@ -88,7 +88,7 @@ def main():
                 q_values = model(states)
                 next_q_values = model(next_states).max(1).values
 
-                target = next_q_values * gamma + reward
+                target = (1 - dones) * next_q_values * gamma + reward
                 q_value = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
 
                 loss = loss_fn(q_value, target)
