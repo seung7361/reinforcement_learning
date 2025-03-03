@@ -1,128 +1,126 @@
+import gymnasium as gym
 import numpy as np
 import torch
-import gymnasium as gym
 
 import random
-from tqdm import tqdm
-import matplotlib.pyplot as plt
+from collections import deque
+
+
+### hyperparameters
+
+EPISODES = 500
+BATCH_SIZE = 64
+GAMMA = 0.99
+LR = 1e-3
+EPS_START = 1.0
+EPS_END = 0.01
+EPS_DECAY = 0.995
+TARGET_UPDATE = 10
+REPLAY_BUFFER_SIZE = 10000
+
+
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = map(np.array, zip(*batch))
+
+        return states, actions, rewards, next_states, dones
+    
+    def __len__(self):
+        return len(self.buffer)
 
 
 class QNetwork(torch.nn.Module):
     def __init__(self, in_dim, out_dim):
         super().__init__()
 
-        self.in_dim = in_dim
-        self.out_dim = out_dim
-
-        self.net = torch.nn.Sequential(
-            torch.nn.Linear(in_dim, 128),
+        self.model = torch.nn.Sequential(
+            torch.nn.Linear(in_dim, 64),
             torch.nn.ReLU(),
-            torch.nn.Linear(128, 128),
+            torch.nn.Linear(64, 64),
             torch.nn.ReLU(),
-            torch.nn.Linear(128, out_dim)
+            torch.nn.Linear(64, out_dim)
         )
 
-    def forward(self, state):
-        if type(state) is tuple:
-            state, _ = state
-        
-        if isinstance(state, np.ndarray):
-            state = torch.FloatTensor(state)
+    def forward(self, x):
+        return self.model(x)
 
-        return self.net(state)
-    
+
+def epsilon_greedy(state, epsilon, model, out_dim, device):
+    if random.random() < epsilon:
+        return random.randrange(out_dim)
+    else:
+        with torch.no_grad():
+            state = torch.FloatTensor(state).unsqueeze(0).to(device) # (1, in_dim)
+            q_values = model(state)
+
+            return q_values.argmax().item()
+
 
 def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = gym.make("MountainCar-v0")
-    model = QNetwork(2, 3)
 
-    episodes = 10000
-    min_buffer_size = 1000
-    max_buffer_size = 10000
-    batch_size = 128
+    in_dim = env.observation_space.shape[0]
+    out_dim = env.action_space.n
 
-    gamma = 0.99
-    epsilon_start = 1.0
-    epsilon_end = 0.01
-    epsilon_decay = 500
-    epsilon = epsilon_start
-
-    replay_buffer = []
-    epsilon_values = []
-    total_rewards = []
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    model = QNetwork(in_dim, out_dim).to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=LR)
     loss_fn = torch.nn.MSELoss()
+    replay_buffer = ReplayBuffer(REPLAY_BUFFER_SIZE)
 
-    for episode in range(episodes):
+    print("Starting training....")
+
+    epsilon = EPS_START
+    for episode in range(EPISODES):
         state, _ = env.reset()
-
         total_reward = 0
         done = False
-        epsilon_values.append(epsilon)
 
         while not done:
-            if random.random() > epsilon:
-                with torch.inference_mode():
-                    action = torch.argmax(model(state)).item() # max Q
-            else:
-                action = random.randint(0, env.action_space.n - 1)
-
+            action = epsilon_greedy(state, epsilon, model, out_dim, device)
+            next_state, reward, done, truncated, _ = env.step(action)
             
-            next_state, reward, done, _, _ = env.step(action)
-            replay_buffer.append((state, action, reward, next_state, done))
+            total_reward += reward
+            replay_buffer.push(state, action, reward, next_state, done)
             state = next_state
 
-            total_reward += reward
-
-            if len(replay_buffer) > min_buffer_size:
-                states, actions, rewards, next_states, dones = \
-                    zip(*random.sample(replay_buffer, batch_size))
+            if len(replay_buffer) > BATCH_SIZE:
+                batch = replay_buffer.sample(BATCH_SIZE)
                 
-                states = torch.FloatTensor(states)
-                actions = torch.LongTensor(actions)
-                rewards = torch.FloatTensor(rewards)
-                next_states = torch.FloatTensor(next_states)
-                dones = torch.FloatTensor(dones)
+                states, actions, rewards, next_states, dones = batch
 
-                q_values = model(states)
-                next_q_values = model(next_states).max(1).values
+                states = torch.FloatTensor(states).to(device)
+                actions = torch.LongTensor(actions).unsqueeze(1).to(device)
+                rewards = torch.FloatTensor(rewards).unsqueeze(1).to(device)
+                next_states = torch.FloatTensor(next_states).to(device)
+                dones = torch.FloatTensor(dones).unsqueeze(1).to(device)
 
-                target = (1 - dones) * next_q_values * gamma + reward
-                q_value = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
+                q_values = model(states).gather(1, actions)
 
-                loss = loss_fn(q_value, target)
+                with torch.no_grad():
+                    next_q_values = model(next_states).max(1, keepdim=True)[0]
+                
+                loss = loss_fn(q_values, next_q_values * GAMMA * (1 - dones) + rewards)
 
                 optimizer.zero_grad()
-
                 loss.backward()
                 optimizer.step()
 
-            while len(replay_buffer) > max_buffer_size:
-                replay_buffer.pop(0)
+        epsilon = max(epsilon * EPS_DECAY, EPS_END)
+        print(f"Episode: {episode} | Total Rewards: {total_reward} | Epsilon: {epsilon}")
+    
+    env.close()
+    torch.save(model.state_dict(), "model.pth")
 
-        epsilon = epsilon_end + (epsilon_start - epsilon_end) * np.exp(-1. * episode / epsilon_decay)
-        print(f"Episode: {episode}, total reward: {total_reward}, epsilon: {epsilon}")
-
-        total_rewards.append(total_reward)
-
-    print("Training done.")
-    torch.save(model.state_dict(), "./model.pth")
-
-    plt.plot(epsilon_values)
-    plt.xlabel('Episode')
-    plt.ylabel('Epsilon')
-    plt.title('Epsilon Decay over Episodes')
-    plt.savefig('epsilon_decay.png')
-    plt.close()
-
-    plt.plot(total_rewards)
-    plt.xlabel('Episode')
-    plt.ylabel('Total Reward')
-    plt.title('Total Reward over Episodes')
-    plt.savefig('total_rewards.png')
-    plt.close()
+    print("Done.")
 
 
-if __name__ == "__main__":
+if __name__  == "__main__":
     main()
