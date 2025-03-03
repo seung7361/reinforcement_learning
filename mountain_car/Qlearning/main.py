@@ -1,6 +1,7 @@
 import gymnasium as gym
 import numpy as np
 import torch
+import gymnasium as gym
 
 import random
 from collections import deque
@@ -66,12 +67,24 @@ def epsilon_greedy(state, epsilon, model, out_dim, device):
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = gym.make("MountainCar-v0")
+    model = QNetwork(2, 3)
 
-    in_dim = env.observation_space.shape[0]
-    out_dim = env.action_space.n
+    episodes = 10000
+    min_buffer_size = 1000
+    max_buffer_size = 10000
+    batch_size = 128
 
-    model = QNetwork(in_dim, out_dim).to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=LR)
+    gamma = 0.99
+    epsilon_start = 1.0
+    epsilon_end = 0.01
+    epsilon_decay = 500
+    epsilon = epsilon_start
+
+    replay_buffer = []
+    epsilon_values = []
+    total_rewards = []
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = torch.nn.MSELoss()
     replay_buffer = ReplayBuffer(REPLAY_BUFFER_SIZE)
 
@@ -84,11 +97,15 @@ def main():
         done = False
 
         while not done:
-            action = epsilon_greedy(state, epsilon, model, out_dim, device)
-            next_state, reward, done, truncated, _ = env.step(action)
+            if random.random() > epsilon:
+                with torch.inference_mode():
+                    action = torch.argmax(model(state)).item() # max Q
+            else:
+                action = random.randint(0, env.action_space.n - 1)
+
             
-            total_reward += reward
-            replay_buffer.push(state, action, reward, next_state, done)
+            next_state, reward, done, _, _ = env.step(action)
+            replay_buffer.append((state, action, reward, next_state, done))
             state = next_state
 
             if len(replay_buffer) > BATCH_SIZE:
