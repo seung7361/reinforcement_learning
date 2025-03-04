@@ -30,7 +30,9 @@ class QNetwork(torch.nn.Module):
     def forward(self, x):
         # x: (B, 4, 84, 84)
         x = self.conv(x)
+
         x = x.view(x.shape[0], -1)
+        
         x = self.dense(x)
         # x: (B, out_dim)
         return x

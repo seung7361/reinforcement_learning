@@ -15,6 +15,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 transform = T.Compose([
     T.ToPILImage(),
     T.Resize((84, 110)),
+    # T.Lambda(lambda img: img.crop((0, 17, img.width, 100))),
     T.CenterCrop((84, 84)),
     T.ToTensor()
 ])
@@ -49,10 +50,12 @@ def train():
             eps = max(EPS_END, EPS_START * np.exp(-step / EPS_DECAY))
             step += 1
 
-            frame_stack[:-1] = frame_stack[1:].clone()
-            frame_stack[-1] = torch.tensor(state, dtype=torch.float32)
-            
-            state_tensor = frame_stack.unsqueeze(0).to(device)
+            state_tensor = frame_stack.unsqueeze(0).clone().to(device) # (4, 84, 84)
+
+            # for i in range(4):
+            #     img = state_tensor[i].cpu().numpy()
+            #     img = (img * 255).astype(np.uint8)
+            #     cv2.imwrite(f"./images/{step}_{i}.png", img)
 
             with torch.no_grad():
                 action = model.action(state_tensor, eps, device)
@@ -62,16 +65,18 @@ def train():
             total_reward += reward
 
             next_state = process_frame(next_state)
-            frame_stack[:-1] = frame_stack[1:].clone()
-            frame_stack[-1] = torch.tensor(next_state, dtype=torch.float32)
 
-            replay_buffer.push(frame_stack.numpy(), action, reward, frame_stack.numpy(), done)
+            frame_stack[:-1] = frame_stack[1:].clone()
+            frame_stack[-1] = torch.tensor(next_state).unsqueeze(0).float()
+
+            replay_buffer.push(state_tensor.numpy(), action, reward, frame_stack.numpy(), done)
+            state = next_state
 
             if len(replay_buffer) >= BATCH_SIZE:
                 batch = replay_buffer.sample(BATCH_SIZE)
                 states, actions, rewards, next_states, dones = batch
 
-                states = torch.tensor(states, dtype=torch.float32, device=device)
+                states = torch.tensor(states, dtype=torch.float32, device=device).reshape(BATCH_SIZE, 4, 84, 84)
                 actions = torch.tensor(actions, dtype=torch.long, device=device).unsqueeze(1)
                 rewards = torch.tensor(rewards, dtype=torch.float32, device=device).unsqueeze(1)
                 next_states = torch.tensor(next_states, dtype=torch.float32, device=device)
@@ -88,6 +93,9 @@ def train():
                 optimizer.step()
 
         print(f"Episode: {episode} | Total Rewards: {total_reward} | Epsilon: {eps}")
+
+        if episode % 100 == 0:
+            torch.save(model.state_dict(), "model.pth")
 
     env.close()
     torch.save(model.state_dict(), "model.pth")
